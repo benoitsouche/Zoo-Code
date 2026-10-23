@@ -154,6 +154,7 @@
 		"title": "Bearbeitung fehlgeschlagen"
 	},
 	"troubleMessage": "Zoo hat Probleme...",
+	"loadEarlierMessages": "{{count}} frühere Nachrichten laden",
 	"apiRequest": {
 		"title": "API-Anfrage",
 		"failed": "API-Anfrage fehlgeschlagen",

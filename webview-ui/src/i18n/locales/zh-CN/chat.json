@@ -154,6 +154,7 @@
 		"title": "编辑失败"
 	},
 	"troubleMessage": "Zoo遇到问题...",
+	"loadEarlierMessages": "加载 {{count}} 条较早的消息",
 	"apiRequest": {
 		"title": "API请求",
 		"failed": "API请求失败",

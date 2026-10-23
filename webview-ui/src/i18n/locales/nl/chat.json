@@ -292,6 +292,7 @@
 		"title": "Bewerking mislukt"
 	},
 	"troubleMessage": "Zoo ondervindt problemen...",
+	"loadEarlierMessages": "Laad {{count}} eerdere berichten",
 	"errorDetails": {
 		"link": "Details",
 		"title": "Foutdetails",

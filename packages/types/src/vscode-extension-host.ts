@@ -39,6 +39,7 @@ export interface ExtensionMessage {
 		| "invoke"
 		| "messageUpdated"
 		| "messagesAppended"
+		| "messagesRange"
 		| "mcpServers"
 		| "enhancedPrompt"
 		| "commitSearchResults"
@@ -160,6 +161,14 @@ export interface ExtensionMessage {
 	messages?: ClineMessage[]
 	/** Batch watermark for the messagesAppended channel (see above). */
 	messagesWatermark?: number
+	/**
+	 * Response to requestMessagesRange (issue #1675 Step 3): an ordered page
+	 * of messages read from the task's persisted history on disk. `offset` and
+	 * `count` echo the request; `messages` is in task order (oldest first),
+	 * exactly the slice [offset, offset+count) of the task's full history
+	 * (0-based, with 0 = first message of the task).
+	 */
+	messagesRange?: { offset: number; count: number; messages: ClineMessage[] }
 	routerModels?: RouterModels
 	openAiModels?: string[]
 	ollamaModels?: ModelRecord
@@ -528,6 +537,7 @@ export interface WebviewMessage {
 		| typeof OllamaModelsMessageType.requestOllamaModels
 		| typeof LmStudioModelsMessageType.requestLmStudioModels
 		| "requestRooModels"
+		| "requestMessagesRange"
 		| typeof VsCodeLmModelsMessageType.requestVsCodeLmModels
 		| typeof VsCodeLmModelsMessageType.githubCopilotSignIn
 		| typeof VsCodeLmModelsMessageType.githubCopilotReconnect
@@ -688,6 +698,13 @@ export interface WebviewMessage {
 	text?: string
 	taskId?: string
 	editedMessageContent?: string
+	/**
+	 * requestMessagesRange (issue #1675 Step 3): load a page of an earlier
+	 * history from disk. `offset` is 0-based into the task's full persisted
+	 * history (0 = first message), `count` the page size. The provider guards
+	 * that `taskId` is the CURRENT task.
+	 */
+	messagesRangeRequest?: { offset: number; count: number }
 	tab?: "settings" | "history" | "mcp" | "modes" | "chat" | "marketplace" | "cloud"
 	disabled?: boolean
 	context?: string

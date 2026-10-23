@@ -153,6 +153,20 @@ export interface ExtensionStateContextType extends ExtensionState {
 	setShowWorktreesInHomeScreen: (value: boolean) => void
 	skills?: SkillMetadata[]
 	rules: RuleMetadata[]
+	/**
+	 * Number of messages the store evicted to shells for the current task
+	 * (issue #1675 Step 3): non-zero means "load earlier messages" is
+	 * available. Decreases as pages are prepended back from disk.
+	 */
+	evictedMessagesCount: number
+	/**
+	 * Request the provider to read the next page of earlier messages for the
+	 * current task from its persisted history and send them back as a
+	 * messagesRange message (which prepends them into the store). Callers
+	 * should read `evictedMessagesCount` first; a no-op request is sent when
+	 * nothing is evicted.
+	 */
+	loadEarlierMessages: (count?: number) => void
 }
 
 export const ExtensionStateContext = createContext<ExtensionStateContextType | undefined>(undefined)
@@ -471,6 +485,8 @@ export const ExtensionStateContextProvider: React.FC<{
 						// A watermark behind what we hold is a stale batch (e.g.
 						// after a resync) — drop it too; the resync snapshot
 						// supersedes it.
+						// Continuity uses totalCount (retained + evicted shells) so
+						// budget eviction never masquerades as a dropped batch.
 						if (watermark !== undefined && messageStore.totalCount + appended.length !== watermark) {
 							vscode.postMessage({ type: "requestStateResync" })
 							return prevState
@@ -484,6 +500,20 @@ export const ExtensionStateContextProvider: React.FC<{
 							...prevState,
 							clineMessages: messageStore.getMessages(),
 						}
+					})
+					break
+				}
+				case "messagesRange": {
+					// Issue #1675 Step 3: a page of earlier messages read from
+					// disk. Prepend into the store (replacing the shells it
+					// covers); publish the fresh window.
+					const range = message.messagesRange
+					if (!range) {
+						break
+					}
+					setState((prevState) => {
+						messageStore.prependMessages(range.messages, range.count)
+						return { ...prevState, clineMessages: messageStore.getMessages() }
 					})
 					break
 				}
@@ -719,6 +749,23 @@ export const ExtensionStateContextProvider: React.FC<{
 		showWorktreesInHomeScreen: state.showWorktreesInHomeScreen ?? true,
 		setShowWorktreesInHomeScreen: (value) =>
 			setState((prevState) => ({ ...prevState, showWorktreesInHomeScreen: value })),
+		evictedMessagesCount: messageStore.evictedCount,
+		loadEarlierMessages: (count = 200) => {
+			const evicted = messageStore.evictedCount
+			if (evicted === 0) {
+				return
+			}
+			const taskId = state.currentTaskItem?.id ?? state.currentTaskId
+			if (!taskId) {
+				return
+			}
+			const page = Math.min(count, evicted)
+			vscode.postMessage({
+				type: "requestMessagesRange",
+				taskId,
+				messagesRangeRequest: { offset: messageStore.totalCount - evicted - page, count: page },
+			})
+		},
 	}
 
 	return <ExtensionStateContext.Provider value={contextValue}>{children}</ExtensionStateContext.Provider>

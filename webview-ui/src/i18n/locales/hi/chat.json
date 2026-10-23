@@ -154,6 +154,7 @@
 		"title": "संपादन असफल"
 	},
 	"troubleMessage": "Zoo को समस्या हो रही है...",
+	"loadEarlierMessages": "पहले के {{count}} संदेश लोड करें",
 	"apiRequest": {
 		"title": "API अनुरोध",
 		"failed": "API अनुरोध विफल हुआ",

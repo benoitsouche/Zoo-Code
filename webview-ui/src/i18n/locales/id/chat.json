@@ -348,6 +348,7 @@
 		"title": "Edit Tidak Berhasil"
 	},
 	"troubleMessage": "Zoo mengalami masalah...",
+	"loadEarlierMessages": "Muat {{count}} pesan sebelumnya",
 	"errorDetails": {
 		"link": "Details",
 		"title": "Detail Kesalahan",

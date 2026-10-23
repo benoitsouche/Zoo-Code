@@ -154,6 +154,7 @@
 		"title": "Chỉnh sửa không thành công"
 	},
 	"troubleMessage": "Zoo đang gặp sự cố...",
+	"loadEarlierMessages": "Tải {{count}} tin nhắn trước đó",
 	"apiRequest": {
 		"title": "Yêu cầu API",
 		"failed": "Yêu cầu API thất bại",

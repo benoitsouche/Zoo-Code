@@ -157,6 +157,7 @@
 		"title": "Modifica non riuscita"
 	},
 	"troubleMessage": "Zoo sta avendo problemi...",
+	"loadEarlierMessages": "Carica {{count}} messaggi precedenti",
 	"apiRequest": {
 		"title": "Richiesta API",
 		"failed": "Richiesta API fallita",

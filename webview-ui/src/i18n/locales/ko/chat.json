@@ -154,6 +154,7 @@
 		"title": "편집 실패"
 	},
 	"troubleMessage": "Zoo에 문제가 발생했습니다...",
+	"loadEarlierMessages": "이전 메시지 {{count}}개 로드",
 	"apiRequest": {
 		"title": "API 요청",
 		"failed": "API 요청 실패",

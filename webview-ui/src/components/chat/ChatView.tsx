@@ -101,6 +101,8 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		messageQueue = [],
 		showWorktreesInHomeScreen,
 		telemetrySetting,
+		evictedMessagesCount,
+		loadEarlierMessages,
 	} = useExtensionState()
 
 	// Show a WarningRow when the user sends a message with a retired provider.
@@ -1723,6 +1725,17 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 
 			{task && (
 				<>
+					{evictedMessagesCount > 0 && (
+						<div className="flex justify-center py-1">
+							<Button
+								variant="secondary"
+								className="text-xs"
+								onClick={() => loadEarlierMessages()}
+								data-testid="load-earlier-messages">
+								{t("chat:loadEarlierMessages", { count: evictedMessagesCount })}
+							</Button>
+						</div>
+					)}
 					<div className="grow flex" ref={scrollContainerRef}>
 						<Virtuoso
 							ref={virtuosoRef}

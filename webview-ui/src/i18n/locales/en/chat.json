@@ -347,6 +347,7 @@
 		"title": "Edit Unsuccessful"
 	},
 	"troubleMessage": "Zoo is having trouble...",
+	"loadEarlierMessages": "Load {{count}} earlier messages",
 	"powershell": {
 		"issues": "It seems like you're having Windows PowerShell issues, please see this"
 	},

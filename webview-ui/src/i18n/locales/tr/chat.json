@@ -154,6 +154,7 @@
 		"title": "Düzenleme Başarısız"
 	},
 	"troubleMessage": "Zoo sorun yaşıyor...",
+	"loadEarlierMessages": "Önceki {{count}} mesajı yükle",
 	"apiRequest": {
 		"title": "API İsteği",
 		"failed": "API İsteği Başarısız",

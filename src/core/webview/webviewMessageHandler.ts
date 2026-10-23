@@ -36,7 +36,7 @@ import { CloudService } from "@roo-code/cloud"
 import { TelemetryService } from "@roo-code/telemetry"
 
 import { type ApiMessage } from "../task-persistence/apiMessages"
-import { saveTaskMessages } from "../task-persistence"
+import { saveTaskMessages, readTaskMessages } from "../task-persistence"
 import { importRooTaskHistory } from "../task-persistence/importRooTaskHistory"
 
 import { ClineProvider } from "./ClineProvider"
@@ -599,6 +599,42 @@ export const webviewMessageHandler = async (
 			// the conversation wholesale, re-baselining the delta stream.
 			await provider.flushMessageDeltas()
 			await provider.postStateToWebview()
+			break
+		}
+		case "requestMessagesRange": {
+			// Issue #1675 Step 3: load-earlier paging. The webview evicted
+			// old messages to shells and now wants a page restored from the
+			// task's persisted history on disk.
+			const request = message.messagesRangeRequest
+			const task = provider.getCurrentTask()
+			if (!request || !task) {
+				break
+			}
+			// Own-task guard: paging is only served for the current task so a
+			// stale webview can't pull arbitrary tasks' histories.
+			if (message.taskId !== task.taskId) {
+				break
+			}
+
+			try {
+				const history = await readTaskMessages({
+					taskId: task.taskId,
+					globalStoragePath: provider.contextProxy.globalStorageUri.fsPath,
+				})
+				const offset = Math.max(0, Math.min(request.offset, history.length))
+				const count = Math.max(0, request.count)
+				const messages = history.slice(offset, offset + count)
+				await provider.postMessageToWebview({
+					type: "messagesRange",
+					messagesRange: { offset, count: messages.length, messages },
+				})
+			} catch (error) {
+				provider.log(`[requestMessagesRange] failed to read history: ${error}`)
+				await provider.postMessageToWebview({
+					type: "messagesRange",
+					messagesRange: { offset: request.offset, count: 0, messages: [] },
+				})
+			}
 			break
 		}
 		case "webviewDidLaunch":

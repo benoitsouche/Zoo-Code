@@ -154,6 +154,7 @@
 		"title": "編集に失敗しました"
 	},
 	"troubleMessage": "Zooに問題が発生しています...",
+	"loadEarlierMessages": "以前の{{count}}件のメッセージを読み込む",
 	"apiRequest": {
 		"title": "APIリクエスト",
 		"failed": "APIリクエスト失敗",
