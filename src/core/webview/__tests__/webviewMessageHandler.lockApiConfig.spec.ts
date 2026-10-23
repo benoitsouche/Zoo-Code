@@ -13,6 +13,7 @@ describe("webviewMessageHandler - lockApiConfigAcrossModes", () => {
 		}
 		getState: ReturnType<typeof vi.fn>
 		postStateToWebview: ReturnType<typeof vi.fn>
+		postStateToWebviewWithoutClineMessages: ReturnType<typeof vi.fn>
 		providerSettingsManager: {
 			setModeConfig: ReturnType<typeof vi.fn>
 		}
@@ -36,6 +37,7 @@ describe("webviewMessageHandler - lockApiConfigAcrossModes", () => {
 				customModes: [],
 			}),
 			postStateToWebview: vi.fn(),
+			postStateToWebviewWithoutClineMessages: vi.fn(),
 			providerSettingsManager: {
 				setModeConfig: vi.fn(),
 			},
@@ -52,7 +54,8 @@ describe("webviewMessageHandler - lockApiConfigAcrossModes", () => {
 
 		expect(mockProvider.context.workspaceState.update).toHaveBeenCalledWith("lockApiConfigAcrossModes", true)
 		expect(mockProvider.providerSettingsManager.setModeConfig).not.toHaveBeenCalled()
-		expect(mockProvider.postStateToWebview).toHaveBeenCalled()
+		// #1675: lock toggle now posts UI-scoped state.
+		expect(mockProvider.postStateToWebviewWithoutClineMessages).toHaveBeenCalled()
 	})
 
 	it("sets lockApiConfigAcrossModes to false without applying to all modes", async () => {
@@ -63,6 +66,7 @@ describe("webviewMessageHandler - lockApiConfigAcrossModes", () => {
 
 		expect(mockProvider.context.workspaceState.update).toHaveBeenCalledWith("lockApiConfigAcrossModes", false)
 		expect(mockProvider.providerSettingsManager.setModeConfig).not.toHaveBeenCalled()
-		expect(mockProvider.postStateToWebview).toHaveBeenCalled()
+		// #1675: lock toggle now posts UI-scoped state.
+		expect(mockProvider.postStateToWebviewWithoutClineMessages).toHaveBeenCalled()
 	})
 })

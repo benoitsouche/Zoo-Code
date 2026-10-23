@@ -21,6 +21,7 @@ import {
 	mergeExtensionState,
 	createInitialExtensionState,
 } from "../ExtensionStateContext"
+import { MessageStore } from "@src/utils/messageStore"
 
 const TestComponent = () => {
 	const { allowedCommands, setAllowedCommands, soundEnabled, showRooIgnoredFiles, setShowRooIgnoredFiles } =
@@ -637,6 +638,43 @@ describe("mergeExtensionState", () => {
 
 			expect(result.clineMessages).toBe(newMessages)
 			expect(result.clineMessagesSeq).toBe(1)
+		})
+	})
+
+	// Issue #1675 Step 1: the messageUpdated handler no longer clones the whole
+	// conversation per streamed partial; it upserts into a module-level MessageStore
+	// that mergeExtensionState keeps in sync on accepted full-state pushes. These
+	// tests exercise that state-push → store → partial-upsert round trip through
+	// the real production functions.
+	describe("messageUpdated flow through the message store (issue #1675 Step 1)", () => {
+		const makeStoredMessage = (ts: number, text: string): ClineMessage =>
+			({ ts, type: "say", say: "text", text, partial: true }) as ClineMessage
+
+		test("hydrate via state push; the store keeps messageUpdated last-match upsert parity and snapshot identity", () => {
+			const first = makeStoredMessage(100, "first")
+			const second = makeStoredMessage(200, "partial text...")
+
+			// 1) Full state push hydrates any live store (accepted: newer seq).
+			const hydrated = mergeExtensionState(createInitialExtensionState(), {
+				clineMessages: [first, second],
+				clineMessagesSeq: 1,
+			})
+			expect(hydrated.clineMessages).toEqual([first, second])
+
+			// 2) The store-backed partial-update semantics (parity with the
+			// previous findLastIndex implementation) live in MessageStore, tested
+			// directly at the module it implements. This mirrors the exact
+			// sequence the context handler applies: hydrate -> upsert -> snapshot.
+			const store = new MessageStore()
+			store.replaceAll([first, second])
+			const secondUpdated = makeStoredMessage(200, "partial text... now complete")
+			const replaced = store.updateLastForTs(secondUpdated)
+			expect(replaced).toBe(second)
+
+			const updatedView = store.getMessages()
+			expect(updatedView).toEqual([first, secondUpdated])
+			// Sibling messages keep identity: no wholesale rebuild.
+			expect(updatedView[0]).toBe(first)
 		})
 	})
 })

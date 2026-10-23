@@ -88,6 +88,7 @@ import { downloadTask, getTaskFileName } from "../../integrations/misc/export-ma
 import { resolveDefaultSaveUri, saveLastExportPath } from "../../utils/export"
 import { getTheme } from "../../integrations/theme/getTheme"
 import WorkspaceTracker from "../../integrations/workspace/WorkspaceTracker"
+import { MessageDeltaQueue } from "./messageDeltaQueue"
 
 import { McpHub } from "../../services/mcp/McpHub"
 import { McpServerManager } from "../../services/mcp/McpServerManager"
@@ -97,6 +98,8 @@ import { CodeIndexManagerRegistry } from "../../services/code-index/code-index-m
 import type { CodeIndexWorkspaceScope } from "../../services/code-index/code-index-workspace-scope"
 import { MdmService } from "../../services/mdm/MdmService"
 import { SkillsManager } from "../../services/skills/SkillsManager"
+import { openAiCodexOAuthManager } from "../../integrations/openai-codex/oauth"
+import { kimiCodeOAuthManager, type KimiCodeOAuthState } from "../../integrations/kimi-code/oauth"
 
 import { fileExistsAtPath } from "../../utils/fs"
 import { setTtsEnabled, setTtsSpeed } from "../../utils/tts"
@@ -209,6 +212,29 @@ type GetStateOptions = {
 	includeTaskHistory?: boolean
 }
 
+/**
+ * #1675 extension-host hot-path fix: auth state (Codex/Kimi OAuth, both of
+ * which cross into the workbench's secret storage — the trace-hot
+ * `doGetPassword` path) was read on EVERY state post. Each read is an IPC
+ * round-trip into the renderer process that also hosts the webview, so
+ * streaming + UI-action posts were converting state refreshes into
+ * secrets-storms. Memoize with a short TTL and explicit invalidation on the
+ * sign-in/sign-out handlers (which call provider.postStateToWebview...
+ * after mutating credentials anyway).
+ */
+const AUTH_STATE_CACHE_TTL_MS = 5_000
+
+type AuthStateSnapshot = {
+	openAiCodexIsAuthenticated: boolean
+	kimiCodeIsAuthenticated: boolean
+	kimiCodeOAuthState: KimiCodeOAuthState | undefined
+}
+
+type AuthStateCacheEntry = {
+	snapshot: AuthStateSnapshot
+	createdAt: number
+}
+
 export class ClineProvider
 	extends EventEmitter<TaskProviderEvents>
 	implements vscode.WebviewViewProvider, TelemetryPropertiesProvider, TaskProviderLike
@@ -244,10 +270,33 @@ export class ClineProvider
 	private taskEventListeners: WeakMap<Task, Array<() => void>> = new WeakMap()
 	private currentWorkspacePath: string | undefined
 	private _disposed = false
+	/**
+	 * Coalescing queue for messagesAppended deltas (issue #1675 Step 2).
+	 * Streaming appends post only the NEW messages on the same 500ms/1000ms-maxWait
+	 * cadence as the throttled state post, instead of embedding the full
+	 * conversation in every state push. Batches never span tasks: full-state
+	 * posts always flush the queue first, so the last batch lands before the
+	 * snapshot that supersedes it.
+	 */
+	private readonly _messageDeltaQueue = new MessageDeltaQueue({
+		waitMs: 500,
+		maxWaitMs: 1000,
+		emit: (messages, watermark) => {
+			void this.postMessageToWebview({ type: "messagesAppended", messages, messagesWatermark: watermark })
+		},
+	})
+
 	private readonly _postStateToWebviewThrottled = debounce(
 		async () => {
 			try {
-				await this.postStateToWebviewWithoutTaskHistory()
+				// Issue #1675 Step 2: streaming state updates no longer embed
+				// clineMessages. New messages travel on the messagesAppended
+				// delta channel; this post carries only the lightweight state
+				// fields (mode, cost, todos, etc.). Delegating to the shared
+				// implementation keeps a single source of truth for the
+				// message-free state post (the specs stub this method to
+				// observe the throttled cadence without doing real work).
+				await this.postStateToWebviewWithoutClineMessages()
 			} catch (error) {
 				this.log(
 					`[ClineProvider#postStateToWebviewThrottled] Failed to post state: ${
@@ -344,6 +393,14 @@ export class ClineProvider
 	private cloudOrganizationsCache: CloudOrganizationMembership[] | null = null
 	private cloudOrganizationsCacheTimestamp: number | null = null
 	private static readonly CLOUD_ORGANIZATIONS_CACHE_DURATION_MS = 5 * 1000 // 5 seconds
+
+	/**
+	 * #1675 hot-path fix: memoized OAuth auth-state snapshot (Codex/Kimi).
+	 * Prevents per-state-post secrets round-trips; invalidated by sign-in/out
+	 * handlers via invalidateAuthStateCache(). Mirrors the cloudOrganizations
+	 * cache idiom above.
+	 */
+	private authStateCache: AuthStateCacheEntry | null = null
 
 	/**
 	 * Monotonically increasing sequence number for clineMessages state pushes.
@@ -854,6 +911,7 @@ export class ClineProvider
 		}
 
 		this._disposed = true
+		this._messageDeltaQueue.dispose()
 		this._postStateToWebviewThrottled.cancel()
 		this.log("Disposing ClineProvider...")
 
@@ -1030,6 +1088,11 @@ export class ClineProvider
 	}
 
 	async resolveWebviewView(webviewView: vscode.WebviewView | vscode.WebviewPanel) {
+		// issue #1675 probe 2: lifecycle logging for alive-gray diagnosis.
+		// A resolve without a subsequent webviewDidLaunch means the webview
+		// document was torn down and never re-initialized.
+		this.log("[webview-lifecycle] resolveWebviewView invoked")
+
 		this.view = webviewView
 		const inTabMode = "onDidChangeViewState" in webviewView
 
@@ -1767,7 +1830,9 @@ export class ClineProvider
 		const lockApiConfigAcrossModes = this.context.workspaceState.get("lockApiConfigAcrossModes", false)
 		if (lockApiConfigAcrossModes) {
 			if (targetTask !== null) {
-				await this.postStateToWebview()
+				// #1675: mode change refresh — mode/config travel in state;
+				// UI-scoped post (conversation delta stream is unaffected).
+				await this.postStateToWebviewWithoutClineMessages()
 			}
 			return
 		}
@@ -1823,7 +1888,9 @@ export class ClineProvider
 		}
 
 		if (targetTask !== null) {
-			await this.postStateToWebview()
+			// #1675: mode change with config reload — mode/config/profile
+			// travel in state; UI-scoped post.
+			await this.postStateToWebviewWithoutClineMessages()
 		}
 	}
 
@@ -2057,7 +2124,9 @@ export class ClineProvider
 
 		if (signal.aborted) return id
 
-		await this.postStateToWebview()
+		// #1675: profile save/switch refresh — profile fields travel in
+		// state; UI-scoped post.
+		await this.postStateToWebviewWithoutClineMessages()
 		return id
 	}
 
@@ -2081,7 +2150,8 @@ export class ClineProvider
 			listApiConfigMeta: entries,
 		})
 
-		await this.postStateToWebview()
+		// #1675: profile deletion refresh — UI-scoped post.
+		await this.postStateToWebviewWithoutClineMessages()
 	}
 
 	private async persistStickyProviderProfileToCurrentTask(
@@ -2169,7 +2239,8 @@ export class ClineProvider
 		}
 
 		if (!skipCurrentTaskRebuild) {
-			await this.postStateToWebview()
+			// #1675: API profile activation refresh — UI-scoped post.
+			await this.postStateToWebviewWithoutClineMessages()
 		}
 
 		if (providerSettings.apiProvider && !skipCurrentTaskRebuild) {
@@ -2180,7 +2251,8 @@ export class ClineProvider
 	async updateCustomInstructions(instructions?: string) {
 		// User may be clearing the field.
 		await this.updateGlobalState("customInstructions", instructions || undefined)
-		await this.postStateToWebview()
+		// #1675: settings-field update — UI-scoped post.
+		await this.postStateToWebviewWithoutClineMessages()
 	}
 
 	// MCP
@@ -2324,7 +2396,8 @@ export class ClineProvider
 				}`,
 			)
 		}
-		await this.postStateToWebview()
+		// #1675: gateway-callback auth refresh — UI-scoped post.
+		await this.postStateToWebviewWithoutClineMessages()
 		const { postZooGatewayCredentialsReady } = await import("../../services/zoo-gateway-credentials-sync")
 		postZooGatewayCredentialsReady((message) => this.postMessageToWebview(message))
 	}
@@ -2529,7 +2602,10 @@ export class ClineProvider
 				}
 			}
 
-			await this.postStateToWebview()
+			// #1675: task-deletion refresh — conversation embed unnecessary;
+			// history deletion travels on the taskHistoryUpdated channel.
+			await this.postStateToWebviewWithoutClineMessages()
+			await this.broadcastTaskHistoryUpdate()
 		} catch (error) {
 			// If task is not found, just remove it from state
 			if (error instanceof Error && error.message === "Task not found") {
@@ -2544,19 +2620,47 @@ export class ClineProvider
 		await this.taskHistoryStore.delete(id)
 		this.recentTasksCache = undefined
 
-		await this.postStateToWebview()
+		// #1675: deletion refresh — the conversation embed is unnecessary;
+		// history changes travel on the dedicated taskHistoryUpdated channel.
+		await this.postStateToWebviewWithoutClineMessages()
+		await this.broadcastTaskHistoryUpdate()
 	}
 
 	async refreshWorkspace() {
 		this.currentWorkspacePath = getWorkspacePath()
-		await this.postStateToWebview()
+		// #1675: workspace path refresh — cwd travels in state; UI-scoped post.
+		await this.postStateToWebviewWithoutClineMessages()
 	}
 
 	async postStateToWebview() {
+		// A full-state snapshot supersedes pending deltas: flush them first so
+		// no batch can land behind the snapshot and duplicate its messages.
+		await this._messageDeltaQueue.flush()
 		const clineMessagesSeq = ++this.clineMessagesSeq
 		const state = await this.getStateToPostToWebview()
 		state.clineMessagesSeq = clineMessagesSeq
 		await this.postMessageToWebview({ type: "state", state })
+	}
+
+	/**
+	 * Queue one appended clineMessage as a `messagesAppended` delta (issue #1675
+	 * Step 2). The queue coalesces bursts and posts only the new messages on
+	 * the same cadence as the throttled state post. `watermark` is the task's
+	 * total message count at the moment the message was appended — captured by
+	 * the caller (Task) immediately after the push — so the batch watermark is
+	 * exact even if more messages arrive before emission.
+	 */
+	public queueMessageDelta(message: ClineMessage, watermark: number): void {
+		this._messageDeltaQueue.push(message, watermark)
+	}
+
+	/**
+	 * Force-emit any pending messagesAppended deltas immediately. Used before
+	 * a full-state post and on resync requests so the delta stream never has a
+	 * pending stale batch behind a fresher snapshot.
+	 */
+	public async flushMessageDeltas(): Promise<void> {
+		await this._messageDeltaQueue.flush()
 	}
 
 	/**
@@ -2568,6 +2672,9 @@ export class ClineProvider
 	 *   `taskHistoryUpdated` / `taskHistoryItemUpdated`.
 	 */
 	async postStateToWebviewWithoutTaskHistory(): Promise<void> {
+		// A full-state post supersedes any pending deltas: flush them first so
+		// the snapshot that replaces them is never preceded by a stale batch.
+		await this._messageDeltaQueue.flush()
 		const clineMessagesSeq = ++this.clineMessagesSeq
 		const state = await this.getStateToPostToWebview({ includeTaskHistory: false })
 		state.clineMessagesSeq = clineMessagesSeq
@@ -2580,6 +2687,13 @@ export class ClineProvider
 	 * the result of the most recent invocation, so awaiting this method does not wait for the trailing
 	 * invocation scheduled by that call. Use `flushPostStateToWebviewThrottled()` to force and await any
 	 * pending trailing invocation before continuing.
+	 *
+	 * Streaming posts (issue #1675 Step 2) omit `clineMessages` entirely: the
+	 * new messages travel on the messagesAppended delta channel, and the
+	 * debounced state update carries only the lightweight non-message fields
+	 * (mode, cost, todos, etc.). The webview's merge logic treats an omitted
+	 * clineMessages as "keep current", which is exactly the right semantics
+	 * here since deltas own the conversation.
 	 */
 	async postStateToWebviewThrottled(): Promise<void> {
 		if (this._disposed) {
@@ -3012,35 +3126,64 @@ export class ClineProvider
 			autoCloseZooOpenedFilesAfterUserEdited:
 				autoCloseZooOpenedFilesAfterUserEdited ?? DEFAULT_AUTO_CLOSE_ZOO_OPENED_FILES_AFTER_USER_EDITED,
 			autoCloseZooOpenedNewFiles: autoCloseZooOpenedNewFiles ?? DEFAULT_AUTO_CLOSE_ZOO_OPENED_NEW_FILES,
-			openAiCodexIsAuthenticated: await (async () => {
-				try {
-					const { openAiCodexOAuthManager } = await import("../../integrations/openai-codex/oauth")
-					return await openAiCodexOAuthManager.isAuthenticated()
-				} catch {
-					return false
-				}
-			})(),
-			kimiCodeIsAuthenticated: await (async () => {
-				try {
-					const { kimiCodeOAuthManager } = await import("../../integrations/kimi-code/oauth")
-					return await kimiCodeOAuthManager.isAuthenticated()
-				} catch {
-					return false
-				}
-			})(),
-			kimiCodeOAuthState: await (async () => {
-				try {
-					const { kimiCodeOAuthManager } = await import("../../integrations/kimi-code/oauth")
-					return kimiCodeOAuthManager.getState()
-				} catch {
-					return undefined
-				}
-			})(),
+			// #1675 hot-path fix: use the memoized snapshot instead of three
+			// secrets round-trips per state post.
+			...(await this.getAuthStateSnapshot()),
 			...zooCodeState,
 			platform: process.platform,
 			arch: process.arch,
 			debug: vscode.workspace.getConfiguration(Package.name).get<boolean>("debug", false),
 		}
+	}
+
+	/**
+	 * #1675 hot-path fix: memoized OAuth auth-state snapshot for state posts.
+	 * Fresh within AUTH_STATE_CACHE_TTL_MS; otherwise collects from the two
+	 * OAuth managers (secrets reads) and caches. Sign-in/out handlers call
+	 * invalidateAuthStateCache() so auth transitions surface immediately.
+	 */
+	private async getAuthStateSnapshot(): Promise<AuthStateSnapshot> {
+		const now = Date.now()
+
+		if (this.authStateCache && now - this.authStateCache.createdAt < AUTH_STATE_CACHE_TTL_MS) {
+			return this.authStateCache.snapshot
+		}
+
+		const snapshot: AuthStateSnapshot = {
+			openAiCodexIsAuthenticated: false,
+			kimiCodeIsAuthenticated: false,
+			kimiCodeOAuthState: undefined,
+		}
+
+		// Static imports (not dynamic `import()`): the extension bundles to a
+		// single extension.js so lazy-loading bought nothing, and dynamic
+		// imports hang the debounced post when vitest fake-timers intercept
+		// the module-runner's microtask completion (#1675 regression found
+		// by the postStateToWebviewThrottled specs).
+		try {
+			snapshot.openAiCodexIsAuthenticated = await openAiCodexOAuthManager.isAuthenticated()
+		} catch {
+			// Keep the default (false) — matches the pre-fix per-post fallback.
+		}
+
+		try {
+			snapshot.kimiCodeIsAuthenticated = await kimiCodeOAuthManager.isAuthenticated()
+			snapshot.kimiCodeOAuthState = kimiCodeOAuthManager.getState()
+		} catch {
+			// Keep the defaults (false / undefined).
+		}
+
+		this.authStateCache = { snapshot, createdAt: now }
+		return snapshot
+	}
+
+	/**
+	 * Invalidate the memoized auth state so the next state post re-reads the
+	 * OAuth managers. Called from the Codex/Kimi sign-in and sign-out
+	 * handlers (and resetState) where credentials change.
+	 */
+	public invalidateAuthStateCache(): void {
+		this.authStateCache = null
 	}
 
 	/**

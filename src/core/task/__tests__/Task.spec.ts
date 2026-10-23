@@ -423,6 +423,11 @@ describe("Cline", () => {
 		mockProvider.postMessageToWebview = vi.fn().mockResolvedValue(undefined)
 		mockProvider.postStateToWebview = vi.fn().mockResolvedValue(undefined)
 		mockProvider.postStateToWebviewWithoutTaskHistory = vi.fn().mockResolvedValue(undefined)
+		// #1675 residual-path fix: Task completion sites now post the
+		// message-free variant (+ the delta queue it coordinates with).
+		mockProvider.postStateToWebviewWithoutClineMessages = vi.fn().mockResolvedValue(undefined)
+		mockProvider.queueMessageDelta = vi.fn()
+		mockProvider.flushMessageDeltas = vi.fn().mockResolvedValue(undefined)
 		mockProvider.postStateToWebviewThrottled = vi.fn().mockResolvedValue(undefined)
 		mockProvider.flushPostStateToWebviewThrottled = vi.fn().mockResolvedValue(undefined)
 		mockProvider.getTaskWithId = vi.fn().mockImplementation(async (id) => ({
@@ -3488,6 +3493,9 @@ describe("Cline", () => {
 					say: vi.fn(),
 					postStateToWebview: vi.fn().mockResolvedValue(undefined),
 					postStateToWebviewWithoutTaskHistory: vi.fn().mockResolvedValue(undefined),
+					// #1675 residual-path fix mocks
+					postStateToWebviewWithoutClineMessages: vi.fn().mockResolvedValue(undefined),
+					queueMessageDelta: vi.fn(),
 					postStateToWebviewThrottled: vi.fn().mockResolvedValue(undefined),
 					flushPostStateToWebviewThrottled: vi.fn().mockResolvedValue(undefined),
 					postMessageToWebview: vi.fn().mockResolvedValue(undefined),
@@ -4212,7 +4220,9 @@ describe("Cline", () => {
 			const pendingFlush = new Promise<void>((resolve) => {
 				releaseFlush = resolve
 			})
-			const flushSpy = vi.mocked(mockProvider.flushPostStateToWebviewThrottled).mockReturnValueOnce(pendingFlush)
+			// #1675 Step 2 + residual fix: unanswered asks flush the DELTA queue
+			// (flushMessageDeltas), not the throttle queue.
+			const flushSpy = vi.mocked(mockProvider.flushMessageDeltas).mockReturnValueOnce(pendingFlush)
 			const messageListener = vi.fn()
 			task.on(RooCodeEventName.Message, messageListener)
 			const message = {
@@ -4248,7 +4258,8 @@ describe("Cline", () => {
 			const postError = new Error("state schedule failed")
 			const flushError = new Error("state flush failed")
 			const postSpy = vi.mocked(mockProvider.postStateToWebviewThrottled).mockRejectedValueOnce(postError)
-			const flushSpy = vi.mocked(mockProvider.flushPostStateToWebviewThrottled).mockRejectedValueOnce(flushError)
+			// #1675 residual fix: ask delivery flushes the delta queue.
+			const flushSpy = vi.mocked(mockProvider.flushMessageDeltas).mockRejectedValueOnce(flushError)
 			const saveSpy = vi.spyOn(taskAccess, "saveClineMessages").mockResolvedValue(true)
 			const messageListener = vi.fn()
 			const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {})
@@ -4266,7 +4277,7 @@ describe("Cline", () => {
 				postError,
 			)
 			expect(consoleErrorSpy).toHaveBeenCalledWith(
-				"[Task#addToClineMessages] flushPostStateToWebviewThrottled failed:",
+				"[Task#addToClineMessages] flushMessageDeltas failed:",
 				flushError,
 			)
 			expect(postSpy).toHaveBeenCalledOnce()
@@ -7710,6 +7721,9 @@ describe("Queued message processing after condense", () => {
 		provider.postMessageToWebview = vi.fn().mockResolvedValue(undefined)
 		provider.postStateToWebview = vi.fn().mockResolvedValue(undefined)
 		provider.postStateToWebviewWithoutTaskHistory = vi.fn().mockResolvedValue(undefined)
+		// #1675 residual-path fix: completion sites post the message-free
+		// variant; mock it so real state construction doesn't run.
+		provider.postStateToWebviewWithoutClineMessages = vi.fn().mockResolvedValue(undefined)
 		provider.getState = vi.fn().mockResolvedValue({})
 		return provider
 	}
@@ -8104,6 +8118,9 @@ describe("pushToolResultToUserContent", () => {
 		mockProvider.postMessageToWebview = vi.fn().mockResolvedValue(undefined)
 		mockProvider.postStateToWebview = vi.fn().mockResolvedValue(undefined)
 		mockProvider.postStateToWebviewWithoutTaskHistory = vi.fn().mockResolvedValue(undefined)
+		// #1675 residual-path fix: completion sites post the message-free
+		// variant.
+		mockProvider.postStateToWebviewWithoutClineMessages = vi.fn().mockResolvedValue(undefined)
 	})
 
 	it("should add tool_result when not a duplicate", () => {

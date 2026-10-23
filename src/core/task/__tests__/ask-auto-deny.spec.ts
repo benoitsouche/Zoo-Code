@@ -25,6 +25,9 @@ type ProviderStub = {
 	getState: () => Promise<Partial<ExtensionState>>
 	postMessageToWebview: ReturnType<typeof vi.fn>
 	postStateToWebviewWithoutTaskHistory: ReturnType<typeof vi.fn>
+	// #1675 residual-path fix: completion sites post the message-free variant.
+	postStateToWebviewWithoutClineMessages: ReturnType<typeof vi.fn>
+	queueMessageDelta: ReturnType<typeof vi.fn>
 	getSkillsManager: () => undefined
 	cwd: string
 }
@@ -135,6 +138,10 @@ describe("Task.ask resolves blanket command denials with structured detail", () 
 		provider = {
 			postMessageToWebview: vi.fn().mockResolvedValue(undefined),
 			postStateToWebviewWithoutTaskHistory: vi.fn().mockResolvedValue(undefined),
+			// #1675 residual-path fix: Task completion sites now post the
+			// message-free variant; mocks must supply it (+ the delta queue).
+			postStateToWebviewWithoutClineMessages: vi.fn().mockResolvedValue(undefined),
+			queueMessageDelta: vi.fn(),
 			getSkillsManager: () => undefined,
 			cwd: TASK_CWD,
 			getState: async () => state,
@@ -273,6 +280,10 @@ describe("Task.ask queue path cannot bypass blanket deny", () => {
 		provider = {
 			postMessageToWebview: vi.fn().mockResolvedValue(undefined),
 			postStateToWebviewWithoutTaskHistory: vi.fn().mockResolvedValue(undefined),
+			// #1675 residual-path fix: completion sites post the message-free
+			// variant now.
+			postStateToWebviewWithoutClineMessages: vi.fn().mockResolvedValue(undefined),
+			queueMessageDelta: vi.fn(),
 			getSkillsManager: () => undefined,
 			cwd: TASK_CWD,
 			getState: async () => state,

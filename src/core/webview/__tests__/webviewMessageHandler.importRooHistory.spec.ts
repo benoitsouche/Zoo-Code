@@ -55,6 +55,8 @@ describe("webviewMessageHandler - importRooHistory", () => {
 		}
 		postMessageToWebview: ReturnType<typeof vi.fn>
 		postStateToWebview: ReturnType<typeof vi.fn>
+		postStateToWebviewWithoutClineMessages: ReturnType<typeof vi.fn>
+		broadcastTaskHistoryUpdate: ReturnType<typeof vi.fn>
 		log: ReturnType<typeof vi.fn>
 	}
 
@@ -73,6 +75,8 @@ describe("webviewMessageHandler - importRooHistory", () => {
 			},
 			postMessageToWebview: vi.fn().mockResolvedValue(undefined),
 			postStateToWebview: vi.fn().mockResolvedValue(undefined),
+			postStateToWebviewWithoutClineMessages: vi.fn().mockResolvedValue(undefined),
+			broadcastTaskHistoryUpdate: vi.fn().mockResolvedValue(undefined),
 			log: vi.fn(),
 		} as any
 	})
@@ -105,7 +109,11 @@ describe("webviewMessageHandler - importRooHistory", () => {
 		expect(mockProvider.taskHistoryStore.invalidateAll).toHaveBeenCalledTimes(1)
 		expect(mockProvider.taskHistoryStore.reconcile).toHaveBeenCalledTimes(1)
 
-		expect(mockProvider.postStateToWebview).toHaveBeenCalledTimes(1)
+		// #1675: history import posts UI-scoped state and broadcasts the
+		// refreshed history; the full-state conversation embed is gone.
+		expect(mockProvider.postStateToWebviewWithoutClineMessages).toHaveBeenCalledTimes(1)
+		expect(mockProvider.broadcastTaskHistoryUpdate).toHaveBeenCalledTimes(1)
+		expect(mockProvider.postStateToWebview).not.toHaveBeenCalled()
 		expect(mockProvider.postMessageToWebview).toHaveBeenNthCalledWith(1, {
 			type: "rooHistoryImportProgress",
 			rooHistoryImportProgress: {
@@ -221,7 +229,9 @@ describe("webviewMessageHandler - importRooHistory", () => {
 		expect(mockProvider.taskHistoryStore.invalidateAll).toHaveBeenCalledTimes(1)
 		expect(mockProvider.taskHistoryStore.reconcile).toHaveBeenCalledTimes(1)
 
-		expect(mockProvider.postStateToWebview).toHaveBeenCalledTimes(1)
+		// #1675: history import posts UI-scoped state + history broadcast.
+		expect(mockProvider.postStateToWebviewWithoutClineMessages).toHaveBeenCalledTimes(1)
+		expect(mockProvider.broadcastTaskHistoryUpdate).toHaveBeenCalledTimes(1)
 		expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(
 			"common:warnings.rooHistoryImport.alreadyImported",
 		)
@@ -237,6 +247,7 @@ describe("webviewMessageHandler - importRooHistory", () => {
 		expect(mockProvider.taskHistoryStore.reconcile).not.toHaveBeenCalled()
 
 		expect(mockProvider.postStateToWebview).not.toHaveBeenCalled()
+		expect(mockProvider.postStateToWebviewWithoutClineMessages).not.toHaveBeenCalled()
 		expect(mockProvider.log).toHaveBeenCalledWith("[importRooHistory] failed: permission denied")
 		expect(mockProvider.postMessageToWebview).toHaveBeenNthCalledWith(2, {
 			type: "rooHistoryImportProgress",

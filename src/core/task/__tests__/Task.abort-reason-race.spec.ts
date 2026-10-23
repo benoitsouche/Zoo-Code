@@ -93,6 +93,10 @@ function makeMockProvider() {
 		getState: vi.fn().mockResolvedValue({}),
 		getSkillsManager: vi.fn().mockReturnValue(undefined),
 		postStateToWebviewWithoutTaskHistory: vi.fn().mockResolvedValue(undefined),
+		// #1675 residual-path fix: completion sites now post the
+		// message-free variant.
+		postStateToWebviewWithoutClineMessages: vi.fn().mockResolvedValue(undefined),
+		queueMessageDelta: vi.fn(),
 		flushPostStateToWebviewThrottled: vi.fn().mockResolvedValue(undefined),
 		postMessageToWebview: vi.fn().mockResolvedValue(undefined),
 		postStateToWebview: vi.fn().mockResolvedValue(undefined),

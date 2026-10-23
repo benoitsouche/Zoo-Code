@@ -80,6 +80,10 @@ describe("Task token usage throttling", () => {
 			log: vi.fn(),
 			postStateToWebview: vi.fn().mockResolvedValue(undefined),
 			postStateToWebviewWithoutTaskHistory: vi.fn().mockResolvedValue(undefined),
+			// #1675 residual-path fix: completion sites post the message-free
+			// variant (+ delta queue).
+			postStateToWebviewWithoutClineMessages: vi.fn().mockResolvedValue(undefined),
+			queueMessageDelta: vi.fn(),
 			postStateToWebviewThrottled: vi.fn().mockResolvedValue(undefined),
 			flushPostStateToWebviewThrottled: vi.fn().mockResolvedValue(undefined),
 			updateTaskHistory: vi.fn().mockResolvedValue(undefined),

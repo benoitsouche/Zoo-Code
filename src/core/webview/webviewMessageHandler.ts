@@ -591,7 +591,18 @@ export const webviewMessageHandler = async (
 				provider.resolveWebviewThemeFixtureProbe(message.requestId, message.themeFixture)
 			}
 			break
+		case "requestStateResync": {
+			// Issue #1675 Step 2 gap recovery: the receiver detected a
+			// discontinuity in the messagesAppended stream (a dropped batch)
+			// and wants a full-state snapshot. Any pending deltas are flushed
+			// first so ordering stays consistent, then the full state carries
+			// the conversation wholesale, re-baselining the delta stream.
+			await provider.flushMessageDeltas()
+			await provider.postStateToWebview()
+			break
+		}
 		case "webviewDidLaunch":
+			provider.log("[webview-lifecycle] webviewDidLaunch received")
 			// Load custom modes first
 			const customModes = await provider.customModesManager.getCustomModes()
 			await updateGlobalState("customModes", customModes)
@@ -870,7 +881,9 @@ export const webviewMessageHandler = async (
 					await provider.contextProxy.setValue(key as keyof RooCodeSettings, newValue)
 				}
 
-				await provider.postStateToWebview()
+				// #1675: settings bulk-save refresh — state fields only; the
+				// conversation/history are untouched by a settings dialog save.
+				await provider.postStateToWebviewWithoutClineMessages()
 			}
 
 			break
@@ -889,7 +902,8 @@ export const webviewMessageHandler = async (
 			break
 		case "didShowAnnouncement":
 			await updateGlobalState("lastShownAnnouncementId", provider.latestAnnouncementId)
-			await provider.postStateToWebview()
+			// #1675: announcement-read state refresh; conversation/history unchanged.
+			await provider.postStateToWebviewWithoutClineMessages()
 			break
 		case "selectImages":
 			const images = await selectImages()
@@ -965,8 +979,11 @@ export const webviewMessageHandler = async (
 					const batchResults = await Promise.all(batchPromises)
 					results.push(...batchResults)
 
-					// Update the UI after each batch to show progress
-					await provider.postStateToWebview()
+					// Update the UI after each batch to show progress.
+					// #1675: history deletions travel on the taskHistoryUpdated
+					// channel; the conversation embed is unnecessary here.
+					await provider.postStateToWebviewWithoutClineMessages()
+					await provider.broadcastTaskHistoryUpdate()
 				}
 
 				// Log final results
@@ -1066,7 +1083,10 @@ export const webviewMessageHandler = async (
 				// so a retry after a partial-copy failure still reconciles the store.
 				await provider.taskHistoryStore.invalidateAll()
 				await provider.taskHistoryStore.reconcile()
-				await provider.postStateToWebview()
+				// #1675: imported history travels on the taskHistoryUpdated channel;
+				// the conversation embed is unnecessary here.
+				await provider.postStateToWebviewWithoutClineMessages()
+				await provider.broadcastTaskHistoryUpdate()
 				await provider.postMessageToWebview({
 					type: "rooHistoryImportProgress",
 					rooHistoryImportProgress: {
@@ -1958,7 +1978,9 @@ export const webviewMessageHandler = async (
 				provider.log(`Successfully deleted MCP server: ${message.serverName}`)
 
 				// Refresh the webview state
-				await provider.postStateToWebview()
+				// #1675: MCP server deletion — config-only refresh (mcpServers
+				// travels in state; the conversation/history are unaffected).
+				await provider.postStateToWebviewWithoutClineMessages()
 			} catch (error) {
 				const errorMessage = error instanceof Error ? error.message : String(error)
 				provider.log(`Failed to delete MCP server: ${errorMessage}`)
@@ -2044,13 +2066,16 @@ export const webviewMessageHandler = async (
 			const ttsEnabled = message.bool ?? true
 			await updateGlobalState("ttsEnabled", ttsEnabled)
 			setTtsEnabled(ttsEnabled)
-			await provider.postStateToWebview()
+			// #1675: UI-action state refresh. Settings toggles don't touch the
+			// conversation or taskHistory; the light post keeps a click
+			// O(state fields) instead of embedding the whole session.
+			await provider.postStateToWebviewWithoutClineMessages()
 			break
 		case "ttsSpeed":
 			const ttsSpeed = message.value ?? 1.0
 			await updateGlobalState("ttsSpeed", ttsSpeed)
 			setTtsSpeed(ttsSpeed)
-			await provider.postStateToWebview()
+			await provider.postStateToWebviewWithoutClineMessages()
 			break
 		case "playTts":
 			if (message.text) {
@@ -2188,14 +2213,16 @@ export const webviewMessageHandler = async (
 
 		case "hasOpenedModeSelector":
 			await updateGlobalState("hasOpenedModeSelector", message.bool ?? true)
-			await provider.postStateToWebview()
+			// #1675: one-time onboarding flag; UI-scoped refresh.
+			await provider.postStateToWebviewWithoutClineMessages()
 			break
 
 		case "lockApiConfigAcrossModes": {
 			const enabled = message.bool ?? false
 			await provider.context.workspaceState.update("lockApiConfigAcrossModes", enabled)
 
-			await provider.postStateToWebview()
+			// #1675: settings toggle — UI-scoped refresh.
+			await provider.postStateToWebviewWithoutClineMessages()
 			break
 		}
 
@@ -2211,17 +2238,20 @@ export const webviewMessageHandler = async (
 				}
 
 				await updateGlobalState("pinnedApiConfigs", updatedPinned)
-				await provider.postStateToWebview()
+				// #1675: profile pin toggle — settings-only refresh.
+				await provider.postStateToWebviewWithoutClineMessages()
 			}
 			break
 		case "enhancementApiConfigId":
 			await updateGlobalState("enhancementApiConfigId", message.text)
-			await provider.postStateToWebview()
+			// #1675: profile selection — settings-only refresh.
+			await provider.postStateToWebviewWithoutClineMessages()
 			break
 
 		case "autoApprovalEnabled":
 			await updateGlobalState("autoApprovalEnabled", message.bool ?? false)
-			await provider.postStateToWebview()
+			// #1675: auto-approval master toggle — settings-only refresh.
+			await provider.postStateToWebviewWithoutClineMessages()
 			break
 		case "enhancePrompt":
 			if (message.text) {
@@ -2595,7 +2625,9 @@ export const webviewMessageHandler = async (
 					const customModes = await provider.customModesManager.getCustomModes()
 					await updateGlobalState("customModes", customModes)
 					await updateGlobalState("mode", message.modeConfig.slug)
-					await provider.postStateToWebview()
+					// #1675: custom mode create/update — modes travel in state;
+					// UI-scoped refresh.
+					await provider.postStateToWebviewWithoutClineMessages()
 
 					// Track telemetry for custom mode creation or update
 					if (TelemetryService.hasInstance()) {
@@ -2691,7 +2723,9 @@ export const webviewMessageHandler = async (
 
 				// Switch back to default mode after deletion
 				await updateGlobalState("mode", defaultModeSlug)
-				await provider.postStateToWebview()
+				// #1675: mode-delete state refresh — modes travel in state;
+				// UI-scoped post.
+				await provider.postStateToWebviewWithoutClineMessages()
 			}
 			break
 		case "exportMode":
@@ -2819,7 +2853,8 @@ export const webviewMessageHandler = async (
 						// Update state after importing
 						const customModes = await provider.customModesManager.getCustomModes()
 						await updateGlobalState("customModes", customModes)
-						await provider.postStateToWebview()
+						// #1675: mode delete — modes travel in state; UI-scoped refresh.
+						await provider.postStateToWebviewWithoutClineMessages()
 
 						// Send success message to webview, include the imported slug so UI can switch
 						await provider.postMessageToWebview({
@@ -2911,7 +2946,8 @@ export const webviewMessageHandler = async (
 						TelemetryService.instance.captureTelemetrySettingsChanged(previousSetting, telemetrySetting)
 					}
 
-					await provider.postStateToWebview()
+					// #1675: telemetry toggle — settings-only refresh.
+					await provider.postStateToWebviewWithoutClineMessages()
 				})
 			telemetrySettingQueue = thisUpdate
 
@@ -2922,7 +2958,8 @@ export const webviewMessageHandler = async (
 			await vscode.workspace
 				.getConfiguration(Package.name)
 				.update("debug", message.bool ?? false, vscode.ConfigurationTarget.Global)
-			await provider.postStateToWebview()
+			// #1675: debug toggle — UI-scoped refresh.
+			await provider.postStateToWebviewWithoutClineMessages()
 			break
 		}
 		case "rooCloudSignIn": {
@@ -2962,14 +2999,16 @@ export const webviewMessageHandler = async (
 		}
 		case "rooCloudSignOut": {
 			if (!isCloudServiceAvailable()) {
-				await provider.postStateToWebview()
+				// #1675: sign-out state refresh — UI-scoped post.
+				await provider.postStateToWebviewWithoutClineMessages()
 				await provider.postMessageToWebview({ type: "authenticatedUser", userInfo: undefined })
 				break
 			}
 
 			try {
 				await CloudService.instance.logout()
-				await provider.postStateToWebview()
+				// #1675: sign-out state refresh — UI-scoped post.
+				await provider.postStateToWebviewWithoutClineMessages()
 				await provider.postMessageToWebview({ type: "authenticatedUser", userInfo: undefined })
 			} catch (error) {
 				provider.log(`AuthService#logout failed: ${error}`)
@@ -2991,7 +3030,10 @@ export const webviewMessageHandler = async (
 					.waitForCallback()
 					.then(async () => {
 						vscode.window.showInformationMessage("Successfully signed in to OpenAI Codex")
-						await provider.postStateToWebview()
+						// #1675: credentials changed — drop the memoized auth
+						// snapshot, then UI-scoped post.
+						provider.invalidateAuthStateCache()
+						await provider.postStateToWebviewWithoutClineMessages()
 					})
 					.catch((error) => {
 						provider.log(`OpenAI Codex OAuth callback failed: ${error}`)
@@ -3010,7 +3052,10 @@ export const webviewMessageHandler = async (
 				const { openAiCodexOAuthManager } = await import("../../integrations/openai-codex/oauth")
 				await openAiCodexOAuthManager.clearCredentials()
 				vscode.window.showInformationMessage("Signed out from OpenAI Codex")
-				await provider.postStateToWebview()
+				// #1675: credentials changed — drop the memoized auth
+				// snapshot, then UI-scoped post.
+				provider.invalidateAuthStateCache()
+				await provider.postStateToWebviewWithoutClineMessages()
 			} catch (error) {
 				provider.log(`OpenAI Codex sign out failed: ${error}`)
 				vscode.window.showErrorMessage("OpenAI Codex sign out failed.")
@@ -3021,7 +3066,8 @@ export const webviewMessageHandler = async (
 			try {
 				const { kimiCodeOAuthManager } = await import("../../integrations/kimi-code/oauth")
 				const device = await kimiCodeOAuthManager.startAuthorization()
-				await provider.postStateToWebview()
+				// #1675: auth-state refresh — UI-scoped post.
+				await provider.postStateToWebviewWithoutClineMessages()
 				await vscode.env.openExternal(
 					vscode.Uri.parse(device.verificationUriComplete ?? device.verificationUri),
 				)
@@ -3029,18 +3075,23 @@ export const webviewMessageHandler = async (
 					.waitForAuthorization()
 					.then(async () => {
 						vscode.window.showInformationMessage("Successfully signed in to Kimi Code")
-						await provider.postStateToWebview()
+						// #1675: credentials changed — drop the memoized auth
+						// snapshot, then UI-scoped post.
+						provider.invalidateAuthStateCache()
+						await provider.postStateToWebviewWithoutClineMessages()
 					})
 					.catch(async (error) => {
 						provider.log(`Kimi Code OAuth failed: ${error}`)
-						await provider.postStateToWebview()
+						provider.invalidateAuthStateCache()
+						await provider.postStateToWebviewWithoutClineMessages()
 					})
 			} catch (error) {
 				provider.log(`Kimi Code OAuth failed: ${error}`)
 				vscode.window.showErrorMessage(
 					`Kimi Code sign in failed: ${error instanceof Error ? error.message : error}`,
 				)
-				await provider.postStateToWebview()
+				provider.invalidateAuthStateCache()
+				await provider.postStateToWebviewWithoutClineMessages()
 			}
 			break
 		}
@@ -3049,7 +3100,10 @@ export const webviewMessageHandler = async (
 				const { kimiCodeOAuthManager } = await import("../../integrations/kimi-code/oauth")
 				await kimiCodeOAuthManager.clearCredentials()
 				vscode.window.showInformationMessage("Signed out from Kimi Code")
-				await provider.postStateToWebview()
+				// #1675: credentials changed — drop the memoized auth
+				// snapshot, then UI-scoped post.
+				provider.invalidateAuthStateCache()
+				await provider.postStateToWebviewWithoutClineMessages()
 			} catch (error) {
 				provider.log(`Kimi Code sign out failed: ${error}`)
 				vscode.window.showErrorMessage("Kimi Code sign out failed.")
@@ -3093,7 +3147,9 @@ export const webviewMessageHandler = async (
 					organizationId === "null" ? null : organizationId,
 				)
 
-				await provider.postStateToWebview()
+				// #1675: auth-state refresh — UI-scoped post (the conversation
+				// and history are unchanged by sign-in).
+				await provider.postStateToWebviewWithoutClineMessages()
 			} catch (error) {
 				provider.log(`ManualUrl#handleAuthCallback failed: ${error}`)
 				const errorMessage = error instanceof Error ? error.message : t("common:errors.manual_url_auth_failed")
@@ -3107,7 +3163,8 @@ export const webviewMessageHandler = async (
 		case "clearCloudAuthSkipModel": {
 			// Clear the flag that indicates auth completed without model selection
 			await provider.context.globalState.update("roo-auth-skip-model", undefined)
-			await provider.postStateToWebview()
+			// #1675: auth onboarding flag — UI-scoped refresh.
+			await provider.postStateToWebviewWithoutClineMessages()
 			break
 		}
 		case "zooCodeSignOut": {
@@ -3168,7 +3225,8 @@ export const webviewMessageHandler = async (
 					)
 				}
 
-				await provider.postStateToWebview()
+				// #1675: sign-out state refresh — UI-scoped post.
+				await provider.postStateToWebviewWithoutClineMessages()
 			} catch (error) {
 				provider.log(
 					`Failed to sign out of Zoo Code: ${error instanceof Error ? error.message : String(error)}`,
@@ -3184,7 +3242,8 @@ export const webviewMessageHandler = async (
 				await CloudService.instance.switchOrganization(organizationId)
 
 				// Refresh the state to update UI
-				await provider.postStateToWebview()
+				// #1675: organization switch — UI-scoped post.
+				await provider.postStateToWebviewWithoutClineMessages()
 
 				// Send success response back to webview
 				await provider.postMessageToWebview({
@@ -3288,7 +3347,8 @@ export const webviewMessageHandler = async (
 				})
 
 				// Update webview state
-				await provider.postStateToWebview()
+				// #1675: codebase-index settings save — config-only refresh.
+				await provider.postStateToWebviewWithoutClineMessages()
 
 				// Then handle validation and initialization for the current workspace
 				const scope = provider.getCurrentWorkspaceCodeIndexScope()
@@ -3583,7 +3643,9 @@ export const webviewMessageHandler = async (
 						search: message.filters.search,
 						tags: message.filters.tags,
 					})
-					await provider.postStateToWebview()
+					// #1675: marketplace-filter refresh — items travel in state
+					// fields; UI-scoped post.
+					await provider.postStateToWebviewWithoutClineMessages()
 				} catch (error) {
 					console.error("Marketplace: Error filtering items:", error)
 					vscode.window.showErrorMessage("Failed to filter marketplace items")
@@ -3605,7 +3667,8 @@ export const webviewMessageHandler = async (
 						message.mpItem,
 						message.mpInstallOptions,
 					)
-					await provider.postStateToWebview()
+					// #1675: marketplace-install refresh — UI-scoped post.
+					await provider.postStateToWebviewWithoutClineMessages()
 					console.log(`Marketplace item installed and config file opened: ${configFilePath}`)
 
 					// Send success message to webview
@@ -3632,7 +3695,8 @@ export const webviewMessageHandler = async (
 			if (marketplaceManager && message.mpItem && message.mpInstallOptions) {
 				try {
 					await marketplaceManager.removeInstalledMarketplaceItem(message.mpItem, message.mpInstallOptions)
-					await provider.postStateToWebview()
+					// #1675: marketplace-remove refresh — UI-scoped post.
+					await provider.postStateToWebviewWithoutClineMessages()
 
 					// Send success message to webview
 					await provider.postMessageToWebview({
@@ -3683,7 +3747,8 @@ export const webviewMessageHandler = async (
 					const configFilePath = await marketplaceManager.installMarketplaceItem(message.payload.item, {
 						parameters: message.payload.parameters,
 					})
-					await provider.postStateToWebview()
+					// #1675: marketplace-install refresh — UI-scoped post.
+					await provider.postStateToWebviewWithoutClineMessages()
 					console.log(`Marketplace item with parameters installed and config file opened: ${configFilePath}`)
 				} catch (error) {
 					console.error(`Error installing marketplace item with parameters: ${error}`)

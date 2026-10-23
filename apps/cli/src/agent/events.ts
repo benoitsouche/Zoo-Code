@@ -77,6 +77,13 @@ export interface ClientEventMap {
 	modeChanged: ModeChangedEvent
 
 	/**
+	 * Emitted when a messagesAppended batch fails the continuity check
+	 * (issue #1675 Step 2): the CLI's message list has a hole and the
+	 * transport layer should request a full-state resync from the extension.
+	 */
+	stateResyncNeeded: StateResyncNeededEvent
+
+	/**
 	 * Emitted on any error during message processing.
 	 */
 	error: Error
@@ -121,6 +128,18 @@ export interface TaskCompletedEvent {
 /**
  * Event payload when mode changes.
  */
+/**
+ * Emitted when a messagesAppended batch fails the continuity check
+ * (issue #1675 Step 2). The CLI's message list has a hole; a full-state
+ * resync should be requested.
+ */
+export interface StateResyncNeededEvent {
+	/** Number of messages the CLI currently holds. */
+	held: number
+	/** The watermark carried by the discontinuous batch. */
+	watermark: number
+}
+
 export interface ModeChangedEvent {
 	/** The previous mode (undefined if first mode set) */
 	previousMode: string | undefined

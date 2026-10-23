@@ -26,8 +26,6 @@ import {
 	DEFAULT_WRITE_DELAY_MS,
 } from "@roo-code/types"
 
-import { findLastIndex } from "@roo/array"
-
 import { checkExistKey } from "@roo/checkExistApiConfig"
 import { Mode, defaultModeSlug, defaultPrompts } from "@roo/modes"
 import { CustomSupportPrompts } from "@roo/support-prompt"
@@ -35,6 +33,8 @@ import { experimentDefault } from "@roo/experiments"
 
 import { vscode } from "@src/utils/vscode"
 import { convertTextMateToHljs } from "@src/utils/textMateToHljs"
+
+import { MessageStore } from "@src/utils/messageStore"
 
 export interface ExtensionStateContextType extends ExtensionState {
 	historyPreviewCollapsed?: boolean // Add the new state property
@@ -157,6 +157,14 @@ export interface ExtensionStateContextType extends ExtensionState {
 
 export const ExtensionStateContext = createContext<ExtensionStateContextType | undefined>(undefined)
 
+// Single message-store instance backing the webview's clineMessages state
+// (issue #1675 Step 1). mergeExtensionState keeps it in sync on accepted
+// full-state pushes; the messageUpdated handler applies O(1) partial upserts.
+// Module-level so it survives context remounts exactly like the conversation
+// it mirrors. Tests reach it through the exported mergeExtensionState and the
+// store-reflecting getMessages behavior, so no test-only export is needed.
+const messageStore = new MessageStore()
+
 export const mergeExtensionState = (prevState: ExtensionState, newState: Partial<ExtensionState>) => {
 	const { customModePrompts: prevCustomModePrompts, experiments: prevExperiments, ...prevRest } = prevState
 
@@ -185,6 +193,21 @@ export const mergeExtensionState = (prevState: ExtensionState, newState: Partial
 	) {
 		rest.clineMessages = prevState.clineMessages
 		rest.clineMessagesSeq = prevState.clineMessagesSeq
+	}
+
+	// Keep the message store in sync with the applied full-state push so that
+	// later messageUpdated partials (which skip this merge) upsert against the
+	// same contents React state holds. Only sync when this push actually
+	// carries messages AND they are the ones being applied:
+	//  - pushes without clineMessages (cloud/mode events) leave the store alone;
+	//  - a stale push rejected by the seq guard leaves the store alone, because
+	//    `prevState.clineMessages` is already what the store mirrors;
+	//  - an accepted push replaces the store in O(new contents).
+	// The identity check `rest.clineMessages !== prevState.clineMessages` is
+	// what distinguishes those cases, since the guard above only reassigns
+	// rest.clineMessages back to the previous array.
+	if (newState.clineMessages !== undefined && rest.clineMessages !== prevState.clineMessages) {
+		messageStore.replaceAll(rest.clineMessages)
 	}
 
 	// Note that we completely replace the previous apiConfiguration and customSupportPrompts objects
@@ -412,11 +435,12 @@ export const ExtensionStateContextProvider: React.FC<{
 					const clineMessage = message.clineMessage!
 					setState((prevState) => {
 						// worth noting it will never be possible for a more up-to-date message to be sent here or in normal messages post since the presentAssistantContent function uses lock
-						const lastIndex = findLastIndex(prevState.clineMessages, (msg) => msg.ts === clineMessage.ts)
-						if (lastIndex !== -1) {
-							const newClineMessages = [...prevState.clineMessages]
-							newClineMessages[lastIndex] = clineMessage
-							return { ...prevState, clineMessages: newClineMessages }
+						const replaced = messageStore.updateLastForTs(clineMessage)
+						if (replaced !== undefined) {
+							// O(1) store upsert replaces the previous O(session) array
+							// clone per streamed partial (issue #1675 Step 1); the store
+							// only rebuilds its cached snapshot when contents changed.
+							return { ...prevState, clineMessages: messageStore.getMessages() }
 						}
 						// Log a warning if messageUpdated arrives for a timestamp not in the
 						// frontend's clineMessages. With the seq guard and cloud event isolation
@@ -424,9 +448,42 @@ export const ExtensionStateContextProvider: React.FC<{
 						// does, it signals a state synchronization issue worth investigating.
 						console.warn(
 							`[messageUpdated] Received update for unknown message ts=${clineMessage.ts}, dropping. ` +
-								`Frontend has ${prevState.clineMessages.length} messages.`,
+								`Frontend has ${messageStore.size} messages.`,
 						)
 						return prevState
+					})
+					break
+				}
+				case "messagesAppended": {
+					// Issue #1675 Step 2: streaming deltas carry only NEW messages.
+					// `messagesWatermark` is the task's total message count after
+					// this batch (a different domain from the state-post
+					// `clineMessagesSeq` counter; the two are never compared).
+					const appended = message.messages ?? []
+					const watermark = message.messagesWatermark
+
+					setState((prevState) => {
+						// Continuity against the store's ground-truth size: the
+						// batch must start exactly where our held messages end. A
+						// discontinuity means a dropped delta (watermark beyond
+						// what we hold plus the batch) — discard the batch and
+						// request a full-state resync rather than render a hole.
+						// A watermark behind what we hold is a stale batch (e.g.
+						// after a resync) — drop it too; the resync snapshot
+						// supersedes it.
+						if (watermark !== undefined && messageStore.totalCount + appended.length !== watermark) {
+							vscode.postMessage({ type: "requestStateResync" })
+							return prevState
+						}
+
+						for (const appendedMessage of appended) {
+							messageStore.append(appendedMessage)
+						}
+
+						return {
+							...prevState,
+							clineMessages: messageStore.getMessages(),
+						}
 					})
 					break
 				}

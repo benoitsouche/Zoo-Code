@@ -38,6 +38,7 @@ export interface ExtensionMessage {
 		| "workspaceUpdated"
 		| "invoke"
 		| "messageUpdated"
+		| "messagesAppended"
 		| "mcpServers"
 		| "enhancedPrompt"
 		| "commitSearchResults"
@@ -144,6 +145,21 @@ export interface ExtensionMessage {
 		path?: string
 	}>
 	clineMessage?: ClineMessage
+	/**
+	 * Streaming deltas for the messages-appended channel (issue #1675 Step 2):
+	 * `messages` carries newly appended clineMessages in order, replacing the
+	 * practice of embedding the full conversation array in every state push.
+	 * `messagesWatermark` is the total message count on the task after these
+	 * appends (captured at enqueue time, so it is exact per message). A batch
+	 * carries the last message's watermark; receivers verify continuity as
+	 * `held + batch.length === watermark`, detect gaps as `watermark > held +
+	 * batch.length`, and request a full-state resync instead of rendering a
+	 * hole. This is a DIFFERENT domain from the state-post `clineMessagesSeq`
+	 * post counter and the two are never compared.
+	 */
+	messages?: ClineMessage[]
+	/** Batch watermark for the messagesAppended channel (see above). */
+	messagesWatermark?: number
 	routerModels?: RouterModels
 	openAiModels?: string[]
 	ollamaModels?: ModelRecord
@@ -491,6 +507,7 @@ export interface WebviewMessage {
 		| "webviewDidLaunch"
 		| "webviewDidFocus"
 		| "newTask"
+		| "requestStateResync"
 		| "askResponse"
 		| "terminalOperation"
 		| "clearTask"

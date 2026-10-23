@@ -301,7 +301,24 @@ export function useMessageHandlers({ nonInteractive }: UseMessageHandlersOptions
 	 */
 	const handleExtensionMessage = useCallback(
 		(msg: ExtensionMessage) => {
-			if (msg.type === "state") {
+			if (msg.type === "messagesAppended") {
+				// Issue #1675 Step 2 co-update: streaming deltas carry only the
+				// NEW messages; route each through the same say/ask handlers.
+				// The flow-control layer (MessageProcessor/StateStore, and the
+				// in-memory uiStore) enforces continuity upstream in the agent
+				// layer; resilience to gaps is handled by the resync event.
+				for (const clineMsg of msg.messages ?? []) {
+					const type = clineMsg.type
+					const say = clineMsg.say
+					const ask = clineMsg.ask
+
+					if (type === "say" && say) {
+						handleSayMessage(clineMsg.ts, say, clineMsg.text || "", clineMsg.partial || false)
+					} else if (type === "ask" && ask) {
+						handleAskMessage(clineMsg.ts, ask, clineMsg.text || "", clineMsg.partial || false)
+					}
+				}
+			} else if (msg.type === "state") {
 				const state = msg.state
 
 				if (!state) {

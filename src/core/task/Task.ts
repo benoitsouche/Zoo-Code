@@ -1663,34 +1663,40 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		return readTaskMessages({ taskId: this.taskId, globalStoragePath: this.globalStoragePath })
 	}
 
+	/**
+	 * Delta-queue one clineMessage to the webview (issue #1675 Step 2).
+	 *
+	 * Routing: the message itself reaches the webview via `messagesAppended`
+	 * (small, O(new) payload, same coalescing cadence as the state throttle);
+	 * non-message state (mode, cost, etc.) still flows through the throttled
+	 * `postStateToWebviewWithoutClineMessages` — which never embeds messages.
+	 *
+	 * Unanswered asks keep their pre-existing immediate-await guarantee: an
+	 * ask not yet answered is flushed straight through the delta queue so webview
+	 * Message listeners can respond against it (askResponse ordering).
+	 */
 	private async addToClineMessages(message: ClineMessage) {
 		message.messageId ??= crypto.randomUUID()
 		this.clineMessages.push(message)
 		const provider = this.providerRef.deref()
-		// Unanswered asks must reach the webview before Message listeners can respond against its state.
-		//
-		// Partial `say` messages deliberately do NOT flush. `flushPostStateToWebviewThrottled()`
-		// invoked right after a leading-edge debounce call has no pending trailing invocation to
-		// run, so it only cancels the trailing timer — which makes the *next* call hit the leading
-		// edge and post immediately. Flushing on every partial therefore defeated the debounce
-		// entirely (one full-state post per message, the very behaviour #1078 set out to remove).
-		// They are safe on the throttled path: the trailing/maxWait post carries the message's
-		// current text, so a `messageUpdated` dropped for a not-yet-known `ts` is superseded
-		// rather than lost.
-		//
-		// Partial *asks* still flush, via the clause below — `Task#ask` adds them without
-		// `isAnswered`, so they keep the ordering guarantee that unanswered asks depend on.
-		const requiresImmediateState = message.type === "ask" && message.isAnswered !== true
+
+		const requiresImmediateDelivery = message.type === "ask" && message.isAnswered !== true
+
+		// Race-free watermark: captured immediately after the push, so it is
+		// exact even if more messages append before the batch is emitted.
+		provider?.queueMessageDelta(message, this.clineMessages.length)
+
 		try {
 			await provider?.postStateToWebviewThrottled()
 		} catch (error) {
 			console.error("[Task#addToClineMessages] postStateToWebviewThrottled failed:", error)
 		}
-		if (requiresImmediateState) {
+
+		if (requiresImmediateDelivery) {
 			try {
-				await provider?.flushPostStateToWebviewThrottled()
+				await provider?.flushMessageDeltas()
 			} catch (error) {
-				console.error("[Task#addToClineMessages] flushPostStateToWebviewThrottled failed:", error)
+				console.error("[Task#addToClineMessages] flushMessageDeltas failed:", error)
 			}
 		}
 		this.emit(RooCodeEventName.Message, { action: "created", message })
@@ -4023,7 +4029,14 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			} satisfies ClineApiReqInfo)
 
 			await this.saveClineMessages()
-			await this.providerRef.deref()?.postStateToWebviewWithoutTaskHistory()
+			// #1675 residual path (live-captured 2026-10-21: webview heap
+			// sawtoothed to 3.9 GB during an active conversation even with
+			// the UI-action sites converted): the pre-fix completione post
+			// here embedded the WHOLE clineMessages array on every message
+			// boundary. The conversation already travels incrementally via
+			// messagesAppended deltas / messageUpdated partials, so this post
+			// only needs the lightweight state fields (cost, tokens, etc.).
+			await this.providerRef.deref()?.postStateToWebviewWithoutClineMessages()
 
 			try {
 				let cacheWriteTokens = 0
@@ -4859,7 +4872,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				}
 
 				await this.saveClineMessages()
-				await this.providerRef.deref()?.postStateToWebviewWithoutTaskHistory()
+				// #1675 residual path (live-captured 2026-10-21): same as the
+				// site above — stream-completion posts embed the whole
+				// conversation. The deltas channel already delivered the
+				// messages incrementally; this post carries state fields only.
+				await this.providerRef.deref()?.postStateToWebviewWithoutClineMessages()
 
 				// No legacy text-stream tool parser state to reset.
 

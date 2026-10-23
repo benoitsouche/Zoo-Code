@@ -1418,6 +1418,11 @@ describe("ClineProvider", () => {
 		void statePost.then(() => {
 			statePostSettled = true
 		})
+		// #1675 Step 2: the post flushes the delta queue before sending, so
+		// the boundary is reached after that await resolves — drain the
+		// microtask chain (flush + state get) rather than a single tick.
+		await Promise.resolve()
+		await Promise.resolve()
 		await Promise.resolve()
 
 		expect(postMessageSpy).toHaveBeenCalledOnce()
@@ -1529,7 +1534,11 @@ describe("ClineProvider", () => {
 		})
 
 		test("posts on the leading edge and coalesces a burst into one trailing post", async () => {
-			const postStateSpy = vi.spyOn(provider, "postStateToWebviewWithoutTaskHistory").mockResolvedValue(undefined)
+			// #1675 Step 2: the throttled callback delegates to the
+			// message-free state post.
+			const postStateSpy = vi
+				.spyOn(provider, "postStateToWebviewWithoutClineMessages")
+				.mockResolvedValue(undefined)
 
 			await provider.postStateToWebviewThrottled()
 			await provider.postStateToWebviewThrottled()
@@ -1545,7 +1554,11 @@ describe("ClineProvider", () => {
 		})
 
 		test("does not starve state posts during continuous updates", async () => {
-			const postStateSpy = vi.spyOn(provider, "postStateToWebviewWithoutTaskHistory").mockResolvedValue(undefined)
+			// #1675 Step 2: the throttled callback delegates to the
+			// message-free state post.
+			const postStateSpy = vi
+				.spyOn(provider, "postStateToWebviewWithoutClineMessages")
+				.mockResolvedValue(undefined)
 
 			await provider.postStateToWebviewThrottled()
 			await vi.advanceTimersByTimeAsync(400)
@@ -1565,7 +1578,11 @@ describe("ClineProvider", () => {
 		// only cancels the trailing timer — and the next call then hits the leading edge again.
 		// Callers on a hot path (see Task#addToClineMessages) must therefore not flush per message.
 		test("flushing after every post defeats coalescing entirely", async () => {
-			const postStateSpy = vi.spyOn(provider, "postStateToWebviewWithoutTaskHistory").mockResolvedValue(undefined)
+			// #1675 Step 2: the throttled callback delegates to the
+			// message-free state post.
+			const postStateSpy = vi
+				.spyOn(provider, "postStateToWebviewWithoutClineMessages")
+				.mockResolvedValue(undefined)
 
 			for (let i = 0; i < 5; i++) {
 				await provider.postStateToWebviewThrottled()
@@ -1593,7 +1610,7 @@ describe("ClineProvider", () => {
 				releasePost = resolve
 			})
 			const postStateSpy = vi
-				.spyOn(provider, "postStateToWebviewWithoutTaskHistory")
+				.spyOn(provider, "postStateToWebviewWithoutClineMessages")
 				.mockResolvedValueOnce(undefined)
 				.mockReturnValueOnce(pendingPost)
 
@@ -1620,7 +1637,11 @@ describe("ClineProvider", () => {
 		})
 
 		test("does not duplicate an idle leading post when flushed", async () => {
-			const postStateSpy = vi.spyOn(provider, "postStateToWebviewWithoutTaskHistory").mockResolvedValue(undefined)
+			// #1675 Step 2: the throttled callback delegates to the
+			// message-free state post.
+			const postStateSpy = vi
+				.spyOn(provider, "postStateToWebviewWithoutClineMessages")
+				.mockResolvedValue(undefined)
 
 			await provider.postStateToWebviewThrottled()
 			await provider.flushPostStateToWebviewThrottled()
@@ -1632,7 +1653,7 @@ describe("ClineProvider", () => {
 		test("handles state post failures inside the debounced callback", async () => {
 			const error = new Error("state post failed")
 			const logSpy = vi.spyOn(provider, "log").mockImplementation(() => {})
-			vi.spyOn(provider, "postStateToWebviewWithoutTaskHistory").mockRejectedValue(error)
+			vi.spyOn(provider, "postStateToWebviewWithoutClineMessages").mockRejectedValue(error)
 
 			await expect(provider.postStateToWebviewThrottled()).resolves.toBeUndefined()
 			expect(logSpy).toHaveBeenCalledWith(
@@ -1642,7 +1663,7 @@ describe("ClineProvider", () => {
 
 		test("stringifies non-Error state post failures inside the debounced callback", async () => {
 			const logSpy = vi.spyOn(provider, "log").mockImplementation(() => {})
-			vi.spyOn(provider, "postStateToWebviewWithoutTaskHistory").mockRejectedValue("state post failed")
+			vi.spyOn(provider, "postStateToWebviewWithoutClineMessages").mockRejectedValue("state post failed")
 
 			await expect(provider.postStateToWebviewThrottled()).resolves.toBeUndefined()
 			expect(logSpy).toHaveBeenCalledWith(
@@ -1654,7 +1675,7 @@ describe("ClineProvider", () => {
 			const error = new Error("state post failed")
 			const logSpy = vi.spyOn(provider, "log").mockImplementation(() => {})
 			const postStateSpy = vi
-				.spyOn(provider, "postStateToWebviewWithoutTaskHistory")
+				.spyOn(provider, "postStateToWebviewWithoutClineMessages")
 				.mockResolvedValueOnce(undefined)
 				.mockRejectedValueOnce(error)
 
@@ -1669,7 +1690,11 @@ describe("ClineProvider", () => {
 		})
 
 		test("cancels pending work on dispose and ignores later schedule or flush calls", async () => {
-			const postStateSpy = vi.spyOn(provider, "postStateToWebviewWithoutTaskHistory").mockResolvedValue(undefined)
+			// #1675 Step 2: the throttled callback delegates to the
+			// message-free state post.
+			const postStateSpy = vi
+				.spyOn(provider, "postStateToWebviewWithoutClineMessages")
+				.mockResolvedValue(undefined)
 
 			await provider.postStateToWebviewThrottled()
 			await provider.postStateToWebviewThrottled()
@@ -3596,6 +3621,10 @@ describe("webviewMessageHandler no-floating-promises coverage", () => {
 				},
 				postMessageToWebview: vi.fn().mockResolvedValue(true),
 				postStateToWebview: vi.fn().mockResolvedValue(undefined),
+				// #1675: converted UI-action handlers post UI-scoped state.
+				postStateToWebviewWithoutClineMessages: vi.fn().mockResolvedValue(undefined),
+				invalidateAuthStateCache: vi.fn(),
+				broadcastTaskHistoryUpdate: vi.fn().mockResolvedValue(undefined),
 				getCurrentTask: vi.fn(),
 				getCurrentWorkspaceCodeIndexScope: vi.fn(),
 				getMcpHub: vi.fn().mockReturnValue({
@@ -5977,7 +6006,8 @@ describe("ClineProvider - Comprehensive Edit/Delete Edge Cases", () => {
 
 			it("logs and posts state when profile persistence fails", async () => {
 				vi.spyOn(provider, "getState").mockRejectedValue(new Error("state unavailable"))
-				vi.spyOn(provider, "postStateToWebview").mockResolvedValue(undefined)
+				// #1675: the gateway callback now posts UI-scoped state.
+				vi.spyOn(provider, "postStateToWebviewWithoutClineMessages").mockResolvedValue(undefined)
 				;(provider as any).providerSettingsManager = {
 					listConfig: vi.fn().mockResolvedValue([]),
 				}
@@ -5988,7 +6018,7 @@ describe("ClineProvider - Comprehensive Edit/Delete Edge Cases", () => {
 					expect.stringContaining("[handleZooCodeCallback] Failed to save zoo-gateway profile"),
 				)
 				// State must still be refreshed even when profile persistence fails.
-				expect(provider.postStateToWebview).toHaveBeenCalled()
+				expect(provider.postStateToWebviewWithoutClineMessages).toHaveBeenCalled()
 			})
 		})
 

@@ -35,6 +35,9 @@ describe("webviewMessageHandler cloud auth fallbacks", () => {
 	const mockProvider = {
 		postMessageToWebview: vi.fn(),
 		postStateToWebview: vi.fn(),
+		// #1675: converted auth handlers post UI-scoped state.
+		postStateToWebviewWithoutClineMessages: vi.fn(),
+		invalidateAuthStateCache: vi.fn(),
 		contextProxy: {
 			getValue: vi.fn(),
 			setValue: vi.fn(),

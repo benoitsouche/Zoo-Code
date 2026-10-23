@@ -113,6 +113,10 @@ export class MessageProcessor {
 					this.handleMessageUpdated(message)
 					break
 
+				case "messagesAppended":
+					this.handleMessagesAppended(message)
+					break
+
 				case "action":
 					this.handleAction(message)
 					break
@@ -248,6 +252,52 @@ export class MessageProcessor {
 		this.emitter.emit("messageUpdated", clineMessage)
 
 		// Emit state change events
+		this.emitStateChangeEvents(previousState, currentState)
+	}
+
+	/**
+	 * Handle a "messagesAppended" message - streaming deltas (issue #1675 Step 2).
+	 *
+	 * The extension now appends new messages via batches that carry only the
+	 * NEW messages plus a watermark (the task's total message count after the
+	 * batch). This keeps CLI memory and processing proportional to streaming
+	 * volume instead of conversation length.
+	 *
+	 * Continuity is verified the same way the webview does: the batch must
+	 * start exactly after the messages we hold. A discontinuity means a lost
+	 * batch; emit stateResyncNeeded so the transport layer can request a
+	 * full-state snapshot instead of operating on a hole.
+	 */
+	private handleMessagesAppended(message: ExtensionMessage): void {
+		const appended = message.messages ?? []
+		if (appended.length === 0) {
+			return
+		}
+
+		const watermark = message.messagesWatermark
+		if (watermark !== undefined && this.store.getMessages().length + appended.length !== watermark) {
+			if (this.options.debug) {
+				debugLog("[MessageProcessor] messagesAppended discontinuity detected, requesting resync", {
+					held: this.store.getMessages().length,
+					batch: appended.length,
+					watermark,
+				})
+			}
+			this.emitter.emit("stateResyncNeeded", { held: this.store.getMessages().length, watermark })
+			return
+		}
+
+		const previousState = this.store.getAgentState()
+
+		for (const clineMessage of appended) {
+			this.store.addMessage(clineMessage)
+			// `message` is the existing new-message event on ClientEventMap.
+			this.emitter.emit("message", clineMessage)
+		}
+
+		const currentState = this.store.getAgentState()
+
+		// Emit state change events (appends can flip streaming/running states).
 		this.emitStateChangeEvents(previousState, currentState)
 	}
 
